@@ -7,116 +7,103 @@ from datetime import datetime
 # Page config
 st.set_page_config(page_title="SMS Spam Classifier", page_icon="📨", layout="centered")
 
-# ---------- Loading helper (safe) ----------
+# ---------- Safe load ----------
 @st.cache_resource
 def cached_load():
-    """
-    Return (vectorizer, model, error_message)
-    If loading was successful -> error_message is None.
-    If something failed -> vectorizer and model are None and error_message contains the error string.
-    """
     try:
         with open("tfidf_vectorizer.pkl", "rb") as f:
             vec = pickle.load(f)
     except Exception as e:
         return None, None, f"Failed to load 'tfidf_vectorizer.pkl': {e}"
-
     try:
         with open("spam_model.pkl", "rb") as f:
             mdl = pickle.load(f)
     except Exception as e:
         return None, None, f"Failed to load 'spam_model.pkl': {e}"
-
     return vec, mdl, None
 
-# ---------- Text cleaning & prediction ----------
+vectorizer, model, load_error = cached_load()
+
+# ---------- Helpers ----------
 def clean_text(text: str) -> str:
     text = text.lower().strip()
     text = re.sub(r"\s+", " ", text)
     return text
 
 def predict_message(text: str, vectorizer, model):
-    """
-    Returns (label_str, confidence_float_or_None)
-    label_str is 'spam' or 'ham'
-    confidence_float_or_None is between 0.0 and 1.0 if available
-    """
     x = vectorizer.transform([clean_text(text)])
     pred = model.predict(x)[0]
-
-    # normalize label types (if model used numeric labels)
+    # normalise label
     if isinstance(pred, (int, float)):
         label = "spam" if int(pred) == 1 else "ham"
     else:
-        # sometimes label strings might be 'spam'/'ham' or 'ham'/'spam'
         label = str(pred).lower()
         if label not in ("spam", "ham"):
-            # fallback: interpret '1' or '0' strings
             if label.isdigit():
                 label = "spam" if int(label) == 1 else "ham"
             else:
                 label = "spam" if label in ("true", "yes") else "ham"
-
     confidence = None
     try:
         if hasattr(model, "predict_proba"):
             confidence = float(model.predict_proba(x).max())
     except Exception:
-        # if predict_proba fails for any reason, keep None
         confidence = None
-
     return label, confidence
 
-# ---------- Load artifacts ----------
-vectorizer, model, load_error = cached_load()
+# ---------- Show error if files missing ----------
+if load_error:
+    st.markdown("<h1 style='text-align:center;'>📨 SMS Spam Classifier</h1>", unsafe_allow_html=True)
+    st.error("Model files could not be loaded. App cannot run without them.")
+    st.caption(load_error)
+    st.info("Place both `tfidf_vectorizer.pkl` and `spam_model.pkl` in the same folder as this app.")
+    st.stop()
+
+# ---------- Initialize session state ----------
+if "input_message" not in st.session_state:
+    st.session_state["input_message"] = ""
+if "history" not in st.session_state:
+    st.session_state["history"] = []
+if "latest" not in st.session_state:
+    st.session_state["latest"] = None
 
 # ---------- UI ----------
 st.markdown("<h1 style='text-align:center;margin-bottom:6px'>📨 SMS Spam Classifier</h1>", unsafe_allow_html=True)
 
-# If loading failed, show the error and stop further execution (no crash).
-if load_error:
-    st.error("Model files could not be loaded. App cannot run without them.")
-    st.caption(load_error)
-    st.info("Make sure both `tfidf_vectorizer.pkl` and `spam_model.pkl` are in the same folder as this file.")
-    st.stop()
+# bind the text_area to session state so Clear can empty it reliably
+st.text_area("", key="input_message", height=160, placeholder="Type or paste SMS here...")
 
-# Input area
-message = st.text_area("", height=160, placeholder="Type or paste SMS here...")
-
-# Buttons
 col1, col2 = st.columns([1, 1])
 with col1:
     predict_btn = st.button("Predict")
 with col2:
     clear_btn = st.button("Clear")
 
-# Clear action
+# Clear action: simply empty the bound session_state value and latest
 if clear_btn:
-    st.session_state.pop("latest", None)
-    st.experimental_rerun()
+    st.session_state["input_message"] = ""
+    st.session_state["latest"] = None
 
 # Predict action
 if predict_btn:
-    if not message or not message.strip():
+    msg = st.session_state.get("input_message", "").strip()
+    if not msg:
         st.error("Please enter a message.")
     else:
-        label, score = predict_message(message, vectorizer, model)
+        label, score = predict_message(msg, vectorizer, model)
         result = {
             "label": label,
             "score": score,
-            "message": message,
+            "message": msg,
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
-        # store for display
-        st.session_state.latest = result
-        if "history" not in st.session_state:
-            st.session_state.history = []
-        st.session_state.history.insert(0, result)
-        st.session_state.history = st.session_state.history[:10]
+        st.session_state["latest"] = result
+        st.session_state["history"].insert(0, result)
+        st.session_state["history"] = st.session_state["history"][:10]
 
 # Show result
-if "latest" in st.session_state:
-    latest = st.session_state.latest
+if st.session_state["latest"]:
+    latest = st.session_state["latest"]
     st.markdown("---")
     if latest["label"] == "spam":
         st.markdown(
@@ -137,8 +124,8 @@ if "latest" in st.session_state:
 # Recent predictions
 st.markdown("---")
 st.subheader("Recent predictions")
-if "history" in st.session_state and st.session_state.history:
-    for entry in st.session_state.history:
+if st.session_state["history"]:
+    for entry in st.session_state["history"]:
         s = f"{entry['label'].upper()}"
         if entry["score"] is not None:
             s += f" — {entry['score']*100:.1f}%"
